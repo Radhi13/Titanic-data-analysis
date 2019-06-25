@@ -1,0 +1,47 @@
+---
+title: "Extra code from the porjexct"
+author: "Radhika-Hegde"
+date: "April 24, 2018"
+output: html_document
+---
+
+```{r}
+
+#Do no run this .
+#Do no run this .
+#Do no run this .
+#Do no run this .
+#Do no run this .
+#Do no run this .
+table(full$Survived)
+full <- full %>%
+  mutate(Survived = case_when(Survived==1 ~ "Yes", 
+                              Survived==0 ~ "No"))
+
+crude_summary <- full %>%
+  filter(set=="train") %>%
+  select(PassengerId, Survived) %>%
+  group_by(Survived) %>%
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n))
+
+crude_survrate <- crude_summary$freq[crude_summary$Survived=="Yes"]
+
+kable(crude_summary, caption="2x2 Contingency Table on Survival.", format="markdown")
+```
+
+
+```{r}
+ggplot(full %>% filter(set=="train"), aes(Sex, fill=Survived)) +
+  geom_bar(position = "fill") +
+  scale_fill_brewer(palette="Set1") +
+  scale_y_continuous(labels=percent) +
+  ylab("Survival Rate") +
+  geom_hline(yintercept=crude_survrate, col="white", lty=2, size=2) +
+  ggtitle("Survival Rate by Sex") + 
+  theme_minimal()
+```
+
+
+
+

@@ -1,0 +1,36 @@
+---
+title: "Milestone 3"
+author: "Radhika-Hegde"
+date: "April 3, 2018"
+output: html_document
+---
+
+```{r}
+library(rpart)
+train 
+```
+
+```{r}
+test
+```
+```{r}
+fit <- rpart(Survived ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked,
+               data=train,
+               method="class")
+```
+
+```{r}
+install.packages('rattle')
+install.packages('rpart.plot')
+nstall.packages('RColorBrewer')
+```
+
+```{r}
+library(rattle)
+library(rpart.plot)
+library(RColorBrewer)
+```
+```{r}
+fancyRpartPlot(fit)
+```
+

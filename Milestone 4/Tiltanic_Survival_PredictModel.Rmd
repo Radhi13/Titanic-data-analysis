@@ -1,0 +1,613 @@
+---
+title: "Analyzing Titanic Dataset for Survival"
+author: "Radhika-Hegde"
+date: "April 7, 2018 till 05/05/2018" 
+output: html_document
+---
+```{r}
+# Load packages
+library('ggplot2') # visualization
+library('ggthemes') # visualization
+library('scales') # visualization
+library('dplyr') # data manipulation
+library('mice') # imputation
+library('randomForest') # classification algorithm
+
+```
+
+```{r}
+#Reading the data
+library(readr)
+train <- read_csv(file.choose(), na=c(""))
+test <- read_csv(file.choose(), na=c(""))
+```
+
+```{r}
+# check data
+summary (train)
+summary (test)
+```
+
+```{r}
+#donot run ---this was created to add on more variable set to both the datasets ( test and train)
+#train$set <- "train"
+#test$set  <- "test"
+#test$Survived <- NA
+```
+
+```{r}
+#trying to get all the coloumn names into one variable
+colnames_train <- names(train)
+colnames_test <- names(test)
+```
+
+```{r}
+# check variables which are in raw_train set but not in raw_test
+setdiff (colnames_train, colnames_test)
+```
+
+```{r}
+#vice versa
+setdiff (colnames_test, colnames_train)
+```
+```{r}
+#combine the two datasets so that when we need to impute or see paterns
+full  <- bind_rows(train, test)
+```
+
+```{r}
+#Missing value count per variables used in fulldata
+# check data
+str(full)
+
+# dataset dimensions
+dim(full)
+
+# Unique values per column
+lapply(full, function(x) length(unique(x))) 
+full %>% map_dbl(~sum(is.na(.)))
+
+```
+
+```{r}
+#donot run
+map_dbl(full, ~sum((is.na(.) == T)/length(.))*100)
+```
+
+```{r}
+#We know that test data had 418 obs. and it didn't have survival data. There are lot of missing values in Cabin and Age variable.
+aggr_col <- c('lightseagreen', 'red')
+aggr (full, col = aggr_col, combined = T, sortVars = T, sortCombs = T, cex.axis = .8)
+```
+
+```{r}
+#here comes the feature engineering
+missing_values <- full %>% summarize_all(funs(sum(is.na(.))/n()))
+
+missing_values <- gather(missing_values, key="feature", value="missing_pct")
+missing_values %>% 
+  ggplot(aes(x=reorder(feature,-missing_pct),y=missing_pct)) +
+  geom_bar(stat="identity",fill="red")+
+  coord_flip()+theme_bw()
+```
+
+```{r}
+#surname to represent families - 
+names <- full$Name
+title <-  gsub("^.*, (.*?)\\..*$", "\\1", names)
+
+full$title <- title
+
+table(title)
+```
+
+```{r}
+#checking out the relation btween sex and title
+table(full$Sex, full$title)
+```
+```{r}
+print("Unique Titles are: "); unique(full$title)
+```
+
+```{r}
+###MISS, Mrs, Master and Mr are taking more numbers
+###Better to group Other titles into bigger basket by checking gender and survival rate to aviod any overfitting
+
+full$title[full$title == 'Mlle']          <- 'Miss' 
+full$title[full$title == 'Ms']            <- 'Miss'
+full$title[full$title == 'Mme']           <- 'Mrs' 
+full$title[full$title == 'Lady']          <- 'Miss'
+full$title[full$title == 'Dona']          <- 'Miss'
+full$title[full$title == 'the Countess']  <- 'Miss'
+
+
+## Titles with very low cell counts to be combined to "rare" level
+rare_title <- c('Capt', 'Col', 'Don', 
+                'Dr', 'Major', 'Rev', 'Sir', 'Jonkheer')
+```
+
+```{r}
+full$title[full$title %in% rare_title]  <- 'Rare Title'
+```
+
+```{r}
+# Show title counts by sex again
+table(full$Sex, full$title)
+```
+
+```{r}
+#Families are binned into a discretized feature based on family member count.
+full <- full %>% 
+        mutate(FamilySize = as.numeric(SibSp) + as.numeric(Parch) + 1) %>% 
+        mutate(FamilySized = case_when(.$FamilySize == 1 ~ "Single", .$FamilySize > 1 & .$FamilySize <= 4 ~ "Mid Family", .$FamilySize > 4 ~ "Large Family"))
+        
+table(full$FamilySized)
+
+```
+
+```{r}
+#this will only show the 891 for train dataset
+table(full$FamilySized, full$Survived)
+```
+
+```{r}
+# Show family size by survival using a mosaic plot
+mosaicplot(table(full$FamilySized, full$Survived), main='Family Size by Survival', shade=TRUE,legend=TRUE)
+```
+
+```{r}
+
+#donot run---
+ggplot(full %>% filter(set=="train") %>% na.omit, aes(`FamilySized`, fill=Survived)) +
+  geom_bar(position="fill") +
+  scale_fill_brewer(palette="Set1") +
+  scale_y_continuous(labels=percent) +
+  ylab("Survival Rate") +
+  geom_hline(yintercept=crude_survrate, col="white", lty=2, size=2) +
+  ggtitle("Survival Rate by Family Group") + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+```{r}
+##Engineer features based on all the passengers with the same ticket
+ticket.unique <- rep(0, nrow(full))
+tickets <- unique(full$Ticket)
+
+for (i in 1:length(tickets)) {
+  current.ticket <- tickets[i]
+  party.indexes <- which(full$Ticket == current.ticket)
+  
+  
+  for (k in 1:length(party.indexes)) {
+    ticket.unique[party.indexes[k]] <- length(party.indexes)
+  }
+}
+
+full$ticket.unique <- ticket.unique
+
+full$ticket.size[full$ticket.unique == 1]   <- 'Single'
+full$ticket.size[full$ticket.unique < 5 & full$ticket.unique>= 2]   <- 'Small'
+full$ticket.size[full$ticket.unique >= 5]   <- 'Big'
+
+```
+
+
+```{r}
+#Useful data quality function for missing values
+
+checkColumn = function(df,colname){
+  
+  testData = df[[colname]]
+  numMissing = max(sum(is.na(testData)|is.nan(testData)|testData==''),0)
+
+  
+  if (class(testData) == 'numeric' | class(testData) == 'Date' | class(testData) == 'difftime' | class(testData) == 'integer'){
+    list('col' = colname,'class' = class(testData), 'num' = length(testData) - numMissing, 'numMissing' = numMissing, 'numInfinite' = sum(is.infinite(testData)), 'avgVal' = mean(testData,na.rm=TRUE), 'minVal' = round(min(testData,na.rm = TRUE)), 'maxVal' = round(max(testData,na.rm = TRUE)))
+  } else{
+    list('col' = colname,'class' = class(testData), 'num' = length(testData) - numMissing, 'numMissing' = numMissing, 'numInfinite' = NA,  'avgVal' = NA, 'minVal' = NA, 'maxVal' = NA)
+  }
+  
+}
+checkAllCols = function(df){
+  resDF = data.frame()
+  for (colName in names(df)){
+    resDF = rbind(resDF,as.data.frame(checkColumn(df=df,colname=colName)))
+  }
+  resDF
+}
+
+
+datatable(checkAllCols(full), style="bootstrap", class="table-condensed", options = list(dom = 'tp',scrollX = TRUE))
+```
+
+
+```{r}
+ggplot(full[1:891,], aes(x = FamilySize, fill = factor(Survived))) +
+  geom_bar(stat='count', position='dodge') +
+  scale_x_continuous(breaks=c(1:11)) +
+  labs(x = 'Family Size') +
+  theme_few()
+```
+
+```{r}
+#Run the below code first --make it factor
+full$Survived <- as.factor(full$Survived)
+full$SibSp <- as.factor(full$SibSp)
+full$Parch <- as.factor(full$Parch)
+#Run the above code first
+```
+
+```{r}
+full %>% 
+        filter(!is.na(Embarked)) %>% 
+        ggplot(aes(x = as.factor(Pclass), y = Fare, fill = as.factor(Pclass)))+
+        geom_boxplot()+
+        facet_wrap(~as.factor(Embarked), scales = "free")+
+        labs(x = "Pclass")+
+        scale_y_continuous(labels = scales::dollar)
+```
+
+
+```{r}
+embarked_missing <- full %>% filter(is.na(Embarked))
+
+datatable(embarked_missing)
+```
+
+```{r}
+#missinglibraries
+library(tidyverse)
+library(VIM)
+library(RColorBrewer)
+library(viridis)
+library(DT)
+library(magrittr)
+library(scales)
+library(ggstance)
+library(mice)
+library(stringr)
+library(mice)
+library(party)
+library(caret)
+library(ROCR)
+library(e1071)
+library(randomForest)
+library(adabag)
+library(ggstance)
+```
+
+```{r}
+full$Embarked <- replace(full$Embarked, which(is.na(full$Embarked)), 'C')
+```
+
+```{r}
+fare_na <- full %>% 
+        filter(is.na(Fare))
+datatable(fare_na)
+```
+```{r}
+full %>% 
+        filter(Pclass == 3, Embarked == "S") %>% 
+        ggplot(aes(x = Pclass, y = Fare))+
+        geom_boxplot()+
+        labs(x = "Pclass 3", title = "Box Plot - $Fares for Pclass = 3 & Embarked = 'S' ")
+```
+
+```{r}
+median_fare_p3_S <- full %>% 
+        filter(Pclass == 3, Embarked == "S") %$%
+        median(Fare, na.rm=T)
+
+paste0("The median fare for Pclas 3 & Embarked = 'S' is $", median_fare_p3_S)
+```
+
+```{r}
+full$Fare[full$PassengerId == 1044] <- median_fare_p3_S
+```
+
+```{r}
+#Imputing missing values
+var_factors <- c("PassengerId", "Pclass", "Sex", "Embarked", "title", "FamilySize", "FamilySized")
+
+full[var_factors] <- map_df(full[var_factors], ~as.factor(.))
+
+#We will use MICE imputation method to impute missing Age variables.
+set.seed(1)
+
+names(full)
+
+full$Age_org <- full$Age
+
+full$Age_imp <- is.na(full$Age)
+
+mice_m1 <- full %>% 
+        select(Pclass, SibSp, Parch, Fare, Embarked, title, FamilySize, Age) %>% 
+        mice(method = "rf")
+
+mice_m1_output <- complete(mice_m1)
+
+full$Age <- mice_m1_output$Age
+
+#Histogram of Age
+full %>% 
+        ggplot(aes( x= Age_org, fill = Age_imp))+
+        geom_histogram(col = "black", show.legend = F)+
+        labs(title = "Histogram of Age")
+```
+
+```{r}
+#Histogram of Age with imputed value highlighted
+full %>% 
+        ggplot(aes(x = Age, fill = Age_imp))+
+        geom_histogram(col = "black")+
+        labs(title = "Histogram of Age with imputed value highlighted")
+```
+
+```{r}
+##Let us split out data1 sets into original train and test objects but name it as train_edited & test_edited. 
+##They are exactly same apart from the new imputed values.
+
+train_edited <- full[1:891,]
+test_edited <- full[892:1309, ]
+```
+
+```{r}
+#Sex ratio vs survival
+#74 % of all the females in train data survived whereas only ~18% out of all male population survived. That is huge differences!!!
+prop.table(table(train_edited$Survived, train_edited$Sex),2)
+```
+
+
+```{r}
+#table whcih will have all the entries with no missing data
+pclass_Sex <- train_edited %>% 
+        group_by(Survived, Pclass, Sex, FamilySized, title) %>% 
+        summarise(n=n())
+
+datatable(pclass_Sex, caption = "Survivor Table")
+```
+
+```{r}
+#Relation: Title | Pclass | Survival
+pclass_Sex %>% 
+        ggplot(aes(x = Pclass, y = n))+
+        geom_bar(aes(fill = title), stat="identity")+
+        facet_wrap(Survived~Sex, scales = "free_y")
+```
+
+```{r}
+#Family Sized | Pclass | Survival
+pclass_Sex %>% 
+        ggplot(aes(x = Pclass, y = n))+
+        geom_bar(aes(fill = FamilySized), stat="identity")+
+        facet_wrap(Survived~Sex)
+```
+
+```{r}
+#small family have survived better than large family
+train_edited %>% 
+        ggplot(aes(x = FamilySize, fill = Survived))+
+        geom_bar(position = "dodge")+
+        labs(x = "Family Size")
+
+```
+
+```{r}
+#Age vs Survival Boxplot
+train_edited %>% 
+        ggplot(aes(x = Age, y = Survived, fill = Sex))+
+        geom_boxploth()+
+        geom_jitter(alpha = 0.09)+
+        labs(x = "Age")
+```
+
+```{r}
+#Who did not survive, on average females were much younger than males.
+datatable(train_edited %>% 
+        group_by(Survived, Sex) %>% 
+        summarise(average_age = median(Age),Count=n()))
+```
+
+
+```{r} 
+#split the data again this was used to play round the datasets
+split.data <- function(data, p = .7, s=007) {
+        set.seed(s)
+        n <- nrow(data)
+        train_index <- sample(1:n, size= round(p*n)) 
+        trainset <- data[train_index, ]
+        testset <- data[-train_index, ]
+        list(trainset = trainset, testset=testset)
+}
+
+allset <- split.data(train_edited)
+
+trainset <- allset$trainset
+testset <- allset$testset
+
+
+```
+
+
+```{r}
+#ctree model
+trainset.ctree <- ctree(Survived ~ Pclass + Sex + SibSp + Parch + Fare + Embarked + title + FamilySized + FamilySize + Age , trainset)
+#Conditional inference tree of the trainset
+plot(trainset.ctree)
+```
+
+```{r}
+#Ctree prediction
+ctree_predict <- predict(trainset.ctree, trainset)
+
+conf_matrix_ctree<- confusionMatrix(ctree_predict, trainset$Survived)
+
+conf_matrix_ctree
+```
+
+```{r}
+#using rpart for decison trees
+fit <- rpart(Survived ~ Pclass + Sex + SibSp + Parch + Fare + Embarked + title + FamilySized + FamilySize + Age,
+               data=trainset,
+               method="class")
+```
+
+```{r}
+#plot the tree
+plot(fit)
+text(fit)
+```
+
+```{r}
+ #install.packages('rattle')
+ #install.packages('rpart.plot')
+ #install.packages('RColorBrewer')
+ library(rattle)
+ library(rpart.plot)
+ library(RColorBrewer)
+ library(randomForest)
+library(caret)
+library(tidyverse)
+library(VIM)
+library(RColorBrewer)
+library(viridis)
+library(DT)
+library(magrittr)
+library(scales)
+library(ggstance)
+library(mice)
+library(stringr)
+library(mice)
+library(party)
+library(caret)
+library(ROCR)
+library(e1071)
+library(randomForest)
+library(adabag)
+library(ggstance)
+```
+
+
+
+```{r}
+fancyRpartPlot(fit)
+```
+
+```{r}
+summary(full$Age)
+```
+
+```{r}
+#thought of using certain variable to check using decion trees
+fit1 <- rpart(Survived ~ Pclass + Sex + Fare + Age + title,
+               data=trainset,
+               method="class")
+```
+
+```{r}
+fancyRpartPlot(fit1)
+```
+
+```{r}
+#train_edited is train dataset(891 rows)
+# Building model with Random Forest
+trainset.rf <- randomForest(Survived ~ Pclass + Sex + SibSp + Parch + Fare + Embarked + title + FamilySized + Age + FamilySize, data=train_edited, importance = T)
+
+```
+```{r}
+###
+#### this is just creted to check if i get ridd of SibSp + Parch what would be the matrix
+####
+trainset.rf1 <- randomForest(Survived ~ Pclass + Sex + Fare + Embarked + title + FamilySized + Age + FamilySize, data=train_edited, importance = T)
+
+trainset.rf1
+
+options('digits'= 3)
+conf_matrix2 <- trainset.rf1$confusion
+knitr::kable(conf_matrix2, digits = 3, caption = "Prediciton Errors: ")
+
+options('digits'= 3)
+trainset.rf1$confusion[, 'class.error']
+```
+
+
+```{r}
+trainset.rf
+
+```
+```{r}
+
+options('digits'= 3)
+conf_matrix1 <- trainset.rf$confusion
+knitr::kable(conf_matrix1, digits = 3, caption = "Prediciton Errors: ")
+```
+
+```{r}
+options('digits'= 3)
+trainset.rf$confusion[, 'class.error']
+```
+
+```{r}
+
+rf_predict <- predict(trainset.rf, train_edited)
+
+conf_rf <- confusionMatrix(rf_predict, train_edited$Survived)
+
+conf_rf
+```
+
+```{r}
+plot(trainset.rf, main = "Mean square error rate")
+legend('topright', legend = colnames(trainset.rf$err.rate), col=1:3, fill=1:3)
+```
+```{r}
+importance(trainset.rf)
+```
+
+
+```{r}
+datatable(importance(trainset.rf), caption = "Relative Variable Importance")
+
+```
+```{r}
+#This validates what ctree predicted that Title is the most important variable.
+varImpPlot(trainset.rf, main = "Plot of relative variable importance as measured by randomForest")
+```
+
+```{r}
+#Create one more test_file from the full dataset where survived is blank(optional)
+test_extrafile <- full[892:1309, ]
+```
+
+```{r}
+# Get importance -extra reference to build a random forest model
+importance    <- importance(trainset.rf)
+varImportance <- data.frame(Variables = row.names(importance), 
+                            Importance = round(importance[ ,'MeanDecreaseGini'],2))
+
+# Create a rank variable based on importance
+rankImportance <- varImportance %>%
+  mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+
+# Use ggplot2 to visualize the relative importance of variables
+ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+    y = Importance, fill = Importance)) +
+  geom_bar(stat='identity') + 
+  geom_text(aes(x = Variables, y = 0.5, label = Rank),
+    hjust=0, vjust=0.55, size = 4,  colour = 'green') +
+  labs(x = 'Variables') +
+  coord_flip() + 
+  theme_few()
+```
+```{r}
+#### PREDICTION!!!!!!!
+# Predict using the test_edited  and write into a solution file 
+predictions <- predict(trainset.rf, test_edited)
+ 
+solution <- data.frame(PassengerID = test_edited$PassengerId, Survived = predictions)
+ 
+write.csv(solution, file = "TitanicSurvival_pred_test_rf.csv", row.names = F)
+```
+```
+

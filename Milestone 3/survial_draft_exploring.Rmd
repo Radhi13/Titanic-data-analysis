@@ -1,0 +1,65 @@
+---
+title: "Final_milestone3"
+author: "Radhika-Hegde"
+date: "April 7, 2018"
+output: html_document
+---
+```{r}
+
+file.choose()
+
+```
+
+```{r}
+train <- read.csv(file.choose(),stringsAsFactors = F)
+```
+
+```{r}
+str(train)
+```
+
+```{r}
+test <- read.csv(file.choose(),stringsAsFactors = F)
+```
+
+```{r}
+str(test)
+```
+
+```{r}
+table(train$Sex)
+table(test$Sex)
+table(train$Cabin)
+table(test$Cabin)
+sum
+```
+
+```{r}
+full  <- bind_rows(train,test)
+dim(full)
+str(full)
+```
+
+```{r}
+lapply(full, function(x) length(unique(x))) 
+```
+
+```{r}
+colnames_train <- names(train)
+
+colnames_test <- names(test)
+setdiff (colnames_train, colnames_test)
+```
+
+```{r}
+full %>% map_dbl(~sum(is.na(.)))
+```
+
+```{r}
+map_dbl(full, ~sum((is.na(.) == T)/length(.))*100)
+```
+```{r}
+aggr_col <- c('lightseagreen', 'red')
+aggr (full, col = aggr_col, combined = T, sortVars = T, sortCombs = T, cex.axis = .8)
+```
+
